@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 import time
 import pickle
@@ -21,7 +22,7 @@ from sklearn.feature_extraction.text import TfidfTransformer
 __all__ = []
 __version__ = 1.0
 __date__ = '2018-10-29'
-__updated__ = '2019-05-16'
+__updated__ = '2019-05-19'
 
 SENZING_PRODUCT_ID = "9999"  # See https://github.com/Senzing/knowledge-base/blob/master/lists/senzing-product-ids.md
 log_format = '%(asctime)s %(message)s'
@@ -65,6 +66,66 @@ configuration_locator = {
         "env": "SENZING_TEST_PHRASE",
         "cli": "test-phrase"
     }
+}
+
+senzing_lexicon = {
+    'account_domain': {},
+    'account_number': {},
+    'addr_city': {},
+    'addr_country': {},
+    'addr_from_date': {},
+    'addr_full': {},
+    'addr_line1': {},
+    'addr_line2': {},
+    'addr_line3': {},
+    'addr_line4': {},
+    'addr_line5': {},
+    'addr_line6': {},
+    'addr_postal_code': {},
+    'addr_state': {},
+    'addr_thru_date': {},
+    'addr_type': {},
+    'citizenship': {},
+    'data_source': {},
+    'date_of_birth': {},
+    'drivers_license_number': {},
+    'drivers_license_state': {},
+    'email_address': {},
+    'gender': {},
+    'name_first': {},
+    'name_full': {},
+    'name_last': {},
+    'name_middle': {},
+    'name_org': {},
+    'name_prefix': {},
+    'name_suffix': {},
+    'name_type': {},
+    'nationality': {},
+    'nin_country': {},
+    'nin_number': {},
+    'other_id_country': {},
+    'other_id_number': {},
+    'other_id_type': {},
+    'passport_country': {},
+    'passport_number': {},
+    'phone_from_date': {},
+    'phone_number': {},
+    'phone_thru_date': {},
+    'phone_type': {},
+    'record_id': {},
+    'related_from_date': {},
+    'related_thru_date': {},
+    'relationship_key': {},
+    'relationship_role': {},
+    'relationship_type': {},
+    'social_handle': {},
+    'social_network': {},
+    'ssn_last4': {},
+    'ssn_number': {},
+    'tax_id_country': {},
+    'tax_id_number': {},
+    'tax_id_type': {},
+    'website_address': {},
 }
 
 # -----------------------------------------------------------------------------
@@ -381,6 +442,13 @@ def pretty_print(percent, suggestion):
         else:
             print(" {0:.1f}% - {1}".format(percent, suggestion))
 
+
+def regex_based_predictor(regex_based_predictors, sample):
+        for category_id, category_regex in regex_based_predictors.items():
+            if bool(re.match(category_regex, sample)):
+                return category_id
+        return -1
+
 # -----------------------------------------------------------------------------
 # do_* functions
 #   Common function signature: do_XXX(args)
@@ -493,15 +561,15 @@ def do_test_phrase(args):
 
     samples = [test_phrase]
 
-    # Calculate predictions of samples.
+    # Calculate feature_based_predictions of samples.
 
     sample_counts = count_vect.transform(samples)
     sample_tfidf = tfidf_transformer.transform(sample_counts)
-    predictions = clf.predict(sample_tfidf)
+    feature_based_predictions = clf.predict(sample_tfidf)
 
-    # Print samples and predictions.
+    # Print samples and feature_based_predictions.
 
-    for sample, prediction in zip(samples, predictions):
+    for sample, prediction in zip(samples, feature_based_predictions):
         logging.info(message_info(103, sample, training_set.target_names[prediction]))
 
     # Epilog.
@@ -530,46 +598,62 @@ def do_suggest(args):
 
     training_set = pickle.load(open(model_file, "rb"))
 
+    # Initialize machine learning.
+
     count_vect = CountVectorizer()
     training_counts = count_vect.fit_transform(training_set.data)
     tfidf_transformer = TfidfTransformer()
     training_tfidf = tfidf_transformer.fit_transform(training_counts)
-
-    # XXX
-
     clf = MultinomialNB().fit(training_tfidf, training_set.target)
 
     # Example samples.
 
     samples = open(input_file).read().splitlines()
 
-    # Calculate predictions of samples.
+    # Calculate regex_based_predictions of samples.
+
+    category_to_id_dictionary = { training_set.target_names[i] : i for i in range(0, len(training_set.target_names)) }
+    regex_based_predictors = {
+        category_to_id_dictionary.get('cc_account_number'): r'^((4\d{3})|(5[1-5]\d{2})|(6011))-?\d{4}-?\d{4}-?\d{4}|3[4,7]\d{13}$',
+        category_to_id_dictionary.get('gender'): r'^(?:m|M|male|Male|f|F|female|Female)$',
+        category_to_id_dictionary.get('ssn_number'): r'^\d{3}-\d{2}-\d{4}$',
+    }
+
+    regex_based_predictions = []
+    for sample in samples:
+        regex_based_predictions.append(regex_based_predictor(regex_based_predictors, sample))
+
+    # Calculate feature_based_predictions of samples.
 
     sample_counts = count_vect.transform(samples)
     sample_tfidf = tfidf_transformer.transform(sample_counts)
-    predictions = clf.predict(sample_tfidf)
+    feature_based_predictions = clf.predict(sample_tfidf)
 
-    # Print samples and predictions.
+    # Tally predictions.
 
-#     for sample, prediction in zip(samples, predictions):
-#         logging.info(message_info(103, sample, training_set.target_names[prediction]))
+    min_size = min(len(samples), len(feature_based_predictions))
+    prediction_counters = { i : 0 for i in range(0, len(training_set.target_names)) }
 
-    min_size = min(len(samples), len(predictions))
-    prediction_counters = {}
-    for sample, prediction in zip(samples, predictions):
-        if prediction not in prediction_counters.keys():
-            prediction_counters[prediction] = 0
+    for regex_based_prediction, feature_based_prediction in zip(regex_based_predictions, feature_based_predictions):
+        if regex_based_prediction > 0:
+            prediction = regex_based_prediction
+        else:
+            prediction = feature_based_prediction
         prediction_counters[prediction] += 1
+
+    # Calculate percentages.
 
     prediction_percentages = {}
     for prediction, prediction_count in prediction_counters.items():
-        prediction_percentages[training_set.target_names[prediction]] = prediction_count / min_size
+        if prediction_count > 0:
+            prediction_percentages[training_set.target_names[prediction]] = float(prediction_count) / min_size
+
+    # Print predictions.
 
     for key, value in sorted(prediction_percentages.items(), reverse=True, key=lambda item: item[1]):
         percent = value * 100
         if pretty:
             pretty_print(percent, key)
-
         else:
             logging.info(message_info(104, percent, key))
 
@@ -612,27 +696,33 @@ def do_suggest_as_markdown(args):
 
     samples = open(input_file).read().splitlines()
 
-    # Calculate predictions of samples.
+    # Calculate feature_based_predictions of samples.
 
     sample_counts = count_vect.transform(samples)
     sample_tfidf = tfidf_transformer.transform(sample_counts)
-    predictions = clf.predict(sample_tfidf)
+    feature_based_predictions = clf.predict(sample_tfidf)
 
-    # Print samples and predictions.
+    print(feature_based_predictions)
 
-#     for sample, prediction in zip(samples, predictions):
+    # Print samples and feature_based_predictions.
+
+#     for sample, prediction in zip(samples, feature_based_predictions):
 #         logging.info(message_info(103, sample, training_set.target_names[prediction]))
 
-    min_size = min(len(samples), len(predictions))
+    min_size = min(len(samples), len(feature_based_predictions))
     prediction_counters = {}
-    for sample, prediction in zip(samples, predictions):
+    for sample, prediction in zip(samples, feature_based_predictions):
         if prediction not in prediction_counters.keys():
             prediction_counters[prediction] = 0
         prediction_counters[prediction] += 1
 
+    print(prediction_counters)
+
     prediction_percentages = {}
     for prediction, prediction_count in prediction_counters.items():
-        prediction_percentages[training_set.target_names[prediction]] = prediction_count / min_size
+        prediction_percentages[training_set.target_names[prediction]] = float(prediction_count) / min_size
+
+    print(prediction_percentages)
 
     print("\n\n### {0}".format(input_file))
     print("\n```console")
